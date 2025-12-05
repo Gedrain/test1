@@ -17,7 +17,6 @@
     <link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@400;700;800;900&family=Inter:wght@400;500;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css">
-    
     <link rel="stylesheet" href="css/style.css?v=67">
     <link rel="stylesheet" href="css/style2.css?v=67">
     <style id="theme-style"></style>
@@ -27,27 +26,6 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
-
-    <script>
-        window.onerror = function(msg, url, line, col, error) {
-            console.error("Critical Error caught:", msg);
-            const log = document.getElementById('boot-log');
-            if(log) {
-                log.innerHTML += `<div class="log-line log-err" style="color:red; z-index:999999;">[CRIT] ${msg} (Line: ${line})</div>`;
-            }
-            // Если произошла ошибка, принудительно убираем лоадер через 2 секунды
-            setTimeout(() => {
-                const loader = document.getElementById('loader');
-                if(loader && !loader.classList.contains('hidden')) {
-                    loader.classList.add('hidden');
-                    console.warn("Loader force-closed due to error.");
-                    // Показываем тост с ошибкой, если система тостов загрузилась, иначе алерт
-                    alert("System Startup Error: " + msg + "\nCheck console (F12) for details.");
-                }
-            }, 2000);
-            return false;
-        };
-    </script>
 </head>
 <body>
     <div id="toast-container"></div>
