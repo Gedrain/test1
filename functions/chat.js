@@ -1,256 +1,235 @@
 const Chat = {
+    mediaRecorder: null, audioChunks: [], recInterval: null, isRecording: false, pendingImage: null,
+    
+    // Хранение активного аудио
+    activeAudio: null,
+    activeBtnId: null,
+
     init: () => {
-        const inp = document.getElementById('msg-in');
-        if(inp) {
-            inp.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') { e.preventDefault(); Chat.send(); }
-            });
-        }
+        const inp = document.getElementById('msg-in'); const fileIn = document.getElementById('file-in');
+        if(inp) { inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); Chat.send(); } }); inp.addEventListener('input', Chat.updateInputState); }
+        if(fileIn) { fileIn.addEventListener('change', (e) => { const file = e.target.files[0]; if(file) { resizeImage(file, (base64) => { Chat.pendingImage = base64; Chat.showPreview(base64); Chat.updateInputState(); }); } }); }
     },
     
-    back: () => {
-        document.getElementById('chat-top-right').innerHTML = '';
-        
-        // Decide where to go back based on current mode
-        if (State.chatMode === 'dm') {
-             Route('dms');
-        } else {
-             Route('channels');
-        }
-        
-        // Stop listening
-        if(State.activeSubscription) {
-            State.activeSubscription();
-            State.activeSubscription = null;
-        }
-        State.currentChannelId = null;
-        State.dmTarget = null;
-    },
-
-    send: async () => {
-        const txtEl = document.getElementById('msg-in');
-        const txt = txtEl.value.trim();
-        const files = document.getElementById('file-in').files;
-
-        if(!txt && files.length === 0) return;
-        
-        // Validate destination
-        if(!State.currentChannelId && !State.dmTarget) return UI.toast("No destination selected", "error");
-
-        const formData = new FormData();
-        formData.append('author', State.user.uid);
-        
-        if (State.chatMode === 'channel') {
-            formData.append('channel', State.currentChannelId);
-        } else if (State.chatMode === 'dm') {
-            formData.append('target', State.dmTarget);
-        }
-        
-        if(txt) formData.append('text', txt);
-        if(files.length > 0) formData.append('image', files[0]);
-
-        try {
-            await pb.collection('messages').create(formData);
-            txtEl.value = '';
-            document.getElementById('file-in').value = '';
-        } catch(e) {
-            console.error(e);
-            UI.toast("Error sending", "error");
-        }
-    },
-
-    // === LISTEN TO A PUBLIC CHANNEL ===
-    listenChannel: async (chid) => {
-        State.chatMode = 'channel';
-        State.currentChannelId = chid;
-        State.dmTarget = null;
-        
-        const feed = document.getElementById('chat-feed');
-        Chat.prepareFeed(feed);
-
-        try {
-            const resultList = await pb.collection('messages').getList(1, 50, {
-                filter: `channel = "${chid}"`,
-                sort: '-created',
-                expand: 'author'
-            });
-            
-            Chat.renderList(resultList.items, feed);
-
-            State.activeSubscription = await pb.collection('messages').subscribe('*', function(e) {
-                if (e.action === 'create' && e.record.channel === chid) {
-                    Chat.addOne(e.record, feed);
-                }
-                if (e.action === 'delete') Chat.removeOne(e.record.id);
-            });
-        } catch(err) { console.error(err); }
-    },
-
-    // === LISTEN TO PRIVATE MESSAGES (DM) ===
-    listenDM: async (targetUid) => {
-        State.chatMode = 'dm';
-        State.dmTarget = targetUid;
-        State.currentChannelId = null;
-
-        const feed = document.getElementById('chat-feed');
-        Chat.prepareFeed(feed);
-
-        // Get target user info for header
-        try {
-            const u = await pb.collection('users').getOne(targetUid);
-            document.getElementById('chat-title').innerText = '@' + (u.username || u.name);
-        } catch(e) { document.getElementById('chat-title').innerText = 'User'; }
-
-        try {
-            // Filter: Messages where (I am author AND they are target) OR (They are author AND I am target)
-            const myId = State.user.uid;
-            const filter = `(author = "${myId}" && target = "${targetUid}") || (author = "${targetUid}" && target = "${myId}")`;
-
-            const resultList = await pb.collection('messages').getList(1, 50, {
-                filter: filter,
-                sort: '-created',
-                expand: 'author'
-            });
-
-            Chat.renderList(resultList.items, feed);
-
-            State.activeSubscription = await pb.collection('messages').subscribe('*', function(e) {
-                const rec = e.record;
-                // Check if message belongs to this conversation
-                const isRelevant = (rec.author === myId && rec.target === targetUid) || 
-                                   (rec.author === targetUid && rec.target === myId);
-                
-                if (e.action === 'create' && isRelevant) {
-                    Chat.addOne(rec, feed);
-                }
-                if (e.action === 'delete') Chat.removeOne(rec.id);
-            });
-        } catch(err) { console.error(err); }
-    },
-
-    // --- Helpers ---
-    prepareFeed: (feed) => {
-        feed.innerHTML = '<div style="text-align:center; padding:20px; color:#666;">Loading...</div>';
-        if(State.activeSubscription) { State.activeSubscription(); State.activeSubscription = null; }
-    },
-
-    renderList: (items, feed) => {
-        feed.innerHTML = '';
-        items.reverse().forEach(msg => Chat.renderMessage(msg, feed));
-        feed.scrollTop = feed.scrollHeight;
-    },
-
-    addOne: async (rec, feed) => {
-        const fullMsg = await pb.collection('messages').getOne(rec.id, {expand: 'author'});
-        Chat.renderMessage(fullMsg, feed);
-        feed.scrollTop = feed.scrollHeight;
-    },
-
-    removeOne: (id) => {
-        const el = document.getElementById('msg-'+id);
-        if(el) el.remove();
-    },
-
-    renderMessage: (msg, container) => {
-        const isMine = msg.author === State.user.uid;
-        const author = msg.expand ? msg.expand.author : { username: 'Unknown', name: 'Unknown', avatar: '' };
-        
-        const avatarUrl = author.avatar ? pb.files.getUrl(author, author.avatar) : 'https://via.placeholder.com/40';
-        let imageUrl = msg.image ? pb.files.getUrl(msg, msg.image) : '';
-        const displayName = author.name || author.username || "User";
-
-        const div = document.createElement('div');
-        div.className = `msg ${isMine?'mine':''}`;
-        div.id = 'msg-'+msg.id;
-        
-        let del = '';
-        if(isMine || State.profile.role === 'super' || State.profile.role === 'admin') {
-            del = `<i class="fas fa-trash" style="margin-left:8px; cursor:pointer; opacity:0.5; font-size:0.7rem;" onclick="Chat.del('${msg.id}')"></i>`;
-        }
-
-        let prefixHtml = '';
-        if (author.prefix) {
-            prefixHtml = `<span style="color:${author.prefixColor || '#fff'}; margin-right:5px; font-weight:800; text-shadow:0 0 5px ${author.prefixColor};">[${author.prefix}]</span>`;
-        }
-
-        div.innerHTML = `
-            <img src="${avatarUrl}" class="avatar" onclick="window.Profile.view('${msg.author}')">
-            <div class="bubble">
-                <div style="font-size:0.75rem; font-weight:700; color:${isMine?'#fff':'#bc13fe'}; margin-bottom:3px; display:flex; align-items:center;">
-                    ${prefixHtml}${displayName} ${del}
-                </div>
-                ${msg.text ? `<div>${Chat.safe(msg.text)}</div>` : ''}
-                ${imageUrl ? `<img src="${imageUrl}" class="msg-img" onclick="UI.alert('Image','View logic here')">` : ''}
-            </div>
-        `;
-        container.appendChild(div);
-    },
-
-    safe: (str) => {
-        if(!str) return '';
-        const d = document.createElement('div');
-        d.innerText = str;
-        return d.innerHTML;
-    },
-
-    del: async (id) => {
-        if(confirm("Delete message?")) {
-            try { await pb.collection('messages').delete(id); } 
-            catch(e) { UI.toast("Cannot delete", "error"); }
-        }
+    back: () => { 
+        if(Chat.activeAudio) { Chat.activeAudio.pause(); Chat.activeAudio = null; } // Stop audio on exit
+        const rightBtn = document.getElementById('chat-top-right'); if(rightBtn) rightBtn.innerHTML = ''; if (State.chatMode === 'dm') Route('dms'); else Route('channels'); 
     },
     
-    // --- DM List Logic ---
-    loadDMs: async () => {
-        const list = document.getElementById('dm-list');
-        list.innerHTML = '<div style="text-align:center; padding:20px; color:#666;">Loading DMs...</div>';
-        
-        try {
-            // PocketBase doesn't have "distinct" query easily.
-            // We fetch all users except self to show a list of potential DMs (Simple approach)
-            // OR we fetch messages where I am involved and extract users.
-            
-            // Approach: List all users for now (simplest for this architecture)
-            // You can later optimize to "Recent Chats"
-            const users = await pb.collection('users').getList(1, 50, {
-                sort: '-lastSeen',
-                filter: `id != "${State.user.uid}"`
-            });
+    showPreview: (base64) => { const box = document.getElementById('media-preview'); const img = document.getElementById('preview-img-el'); img.src = base64; box.classList.remove('hidden'); },
+    clearPreview: () => { Chat.pendingImage = null; document.getElementById('file-in').value = ''; document.getElementById('media-preview').classList.add('hidden'); Chat.updateInputState(); },
+    
+    updateInputState: () => { const txt = document.getElementById('msg-in').value.trim(); const btnSend = document.getElementById('btn-send'); const btnMic = document.getElementById('btn-mic'); if (txt.length > 0 || Chat.pendingImage) { btnSend.classList.remove('hidden'); btnMic.classList.add('hidden'); } else { btnSend.classList.add('hidden'); btnMic.classList.remove('hidden'); } },
+    
+    startRec: async () => { try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); Chat.mediaRecorder = new MediaRecorder(stream); Chat.audioChunks = []; Chat.mediaRecorder.ondataavailable = event => { Chat.audioChunks.push(event.data); }; Chat.mediaRecorder.start(); Chat.isRecording = true; document.getElementById('chat-input-controls').classList.add('hidden'); document.getElementById('recording-ui').classList.remove('hidden'); let sec = 0; const timerEl = document.getElementById('rec-time'); timerEl.innerText = "0:00"; Chat.recInterval = setInterval(() => { sec++; const m = Math.floor(sec / 60); const s = sec % 60; timerEl.innerText = `${m}:${s < 10 ? '0'+s : s}`; }, 1000); } catch (err) { UI.toast("Microphone access denied", "error"); } },
+    cancelRec: () => { if(Chat.mediaRecorder) { Chat.mediaRecorder.stop(); Chat.mediaRecorder.stream.getTracks().forEach(t => t.stop()); } Chat.resetRecUI(); },
+    finishRec: () => { if(!Chat.mediaRecorder || !Chat.isRecording) return; Chat.mediaRecorder.onstop = () => { const audioBlob = new Blob(Chat.audioChunks, { type: 'audio/webm' }); blobToBase64(audioBlob, (base64Audio) => { Chat.pushMessage(null, '', base64Audio); }); Chat.mediaRecorder.stream.getTracks().forEach(t => t.stop()); }; Chat.mediaRecorder.stop(); Chat.resetRecUI(); },
+    resetRecUI: () => { Chat.isRecording = false; clearInterval(Chat.recInterval); document.getElementById('recording-ui').classList.add('hidden'); document.getElementById('chat-input-controls').classList.remove('hidden'); },
+    
+    send: async () => { 
+        const txtEl = document.getElementById('msg-in'); 
+        const txt = txtEl.value.trim(); 
+        if (!txt && !Chat.pendingImage) return; 
 
-            list.innerHTML = '';
-            users.items.forEach(u => {
-                 const isOnline = u.status === 'online';
-                 const avi = u.avatar ? pb.files.getUrl(u, u.avatar) : 'https://via.placeholder.com/50';
-                 
-                 const el = document.createElement('div');
-                 el.className = 'channel-card'; // Reuse channel card style
-                 el.innerHTML = `
-                    <div class="ch-card-body" style="margin-top:0; padding:15px;">
-                        <img src="${avi}" class="ch-card-avi">
-                        <div class="ch-card-info">
-                            <div class="ch-name">${u.name || u.username}</div>
-                            <div class="ch-meta" style="color:${isOnline?'#00ff9d':'#777'}">
-                                ${isOnline ? '● Online' : 'Offline'}
-                            </div>
-                        </div>
-                        <i class="fas fa-comment-dots" style="color:#d600ff"></i>
-                    </div>
-                 `;
-                 el.onclick = () => {
-                     Chat.startDM(u.id);
-                 };
-                 list.appendChild(el);
-            });
-            
-        } catch(e) { list.innerHTML = "Error loading users"; }
+        // --- PRIVACY CHECK FOR DMs ---
+        if(State.chatMode === 'dm' && State.dmTarget) {
+             const check = await Privacy.check(State.dmTarget, 'dm');
+             if(!check.allowed) {
+                 UI.toast(check.error || "Message blocked", "error");
+                 return;
+             }
+        }
+        // -----------------------------
+
+        Chat.pushMessage(Chat.pendingImage, txt, null); 
+        txtEl.value = ''; 
+        Chat.clearPreview(); 
     },
 
-    startDM: (uid) => {
-        // Close modals if open
-        document.querySelectorAll('.modal-overlay').forEach(el => el.classList.remove('open'));
-        Route('chat');
-        Chat.listenDM(uid);
-    }
+    pushMessage: (img, txt, audio) => { if(!State.chatRef) return; State.chatRef.push({ uid: State.user.uid, user: State.profile.displayName, avatar: State.profile.avatar, prefix: State.profile.prefix || null, prefixColor: State.profile.prefixColor || null, role: State.profile.role, text: txt || '', image: img || null, audio: audio || null, ts: firebase.database.ServerValue.TIMESTAMP, read: false }); },
+    
+    loadDMs: () => { 
+        const l = document.getElementById('dm-list'); 
+        l.innerHTML = ''; 
+        
+        db.ref('dms').on('value', s => { 
+            l.innerHTML = ''; 
+            s.forEach(c => { 
+                if(c.key.includes(State.user.uid)) { 
+                    const otherId = c.key.split('_').find(k => k !== State.user.uid); 
+                    if(otherId) { 
+                        let localUnread = 0; 
+                        const messages = c.val(); 
+                        Object.values(messages).forEach(m => { if (m.uid !== State.user.uid && !m.read) localUnread++; }); 
+                        
+                        db.ref('users/'+otherId).once('value', us => { 
+                            const u = us.val(); 
+                            if(!u) return; 
+                            
+                            // --- STATUS LOGIC ---
+                            const isOnline = u.status === 'online';
+                            const statusDot = `<span class="dm-status-dot ${isOnline ? 'online' : ''}" title="${isOnline ? 'Online' : 'Offline'}"></span>`;
+                            // --------------------
+
+                            const d = document.createElement('div'); 
+                            d.className = 'channel-card'; 
+                            const bannerStyle = u.banner ? `background-image: url('${u.banner}')` : ''; 
+                            const badgeHtml = localUnread > 0 ? `<span class="badge-count visible" style="margin-left:auto;">${localUnread}</span>` : ''; 
+                            const avatar = u.avatar || 'https://via.placeholder.com/100'; 
+                            
+                            d.innerHTML = `
+                                <div class="ch-card-banner" style="${bannerStyle}"></div>
+                                <div class="ch-card-body">
+                                    <img src="${avatar}" class="ch-card-avi">
+                                    <div class="ch-card-info">
+                                        <div class="ch-name">${u.displayName}${statusDot}</div>
+                                        <div class="ch-meta">Private Chat</div>
+                                    </div>
+                                    ${badgeHtml}
+                                </div>
+                            `; 
+                            d.onclick = () => Chat.startDM(otherId, u.displayName); 
+                            l.appendChild(d); 
+                        }); 
+                    } 
+                } 
+            }); 
+        }); 
+    },
+    
+    startDM: async (targetId, targetName) => { 
+        const tid = targetId || State.dmTarget; 
+        if(!tid) return console.error("No target for DM"); 
+
+        // --- PRIVACY CHECK ON OPEN ---
+        const check = await Privacy.check(tid, 'dm');
+        if(!check.allowed) {
+            UI.toast(check.error || "Cannot open DM", "error");
+            // Optional: return; // Можно не открывать, если хотим жестко запретить
+        }
+        // -----------------------------
+        
+        State.chatMode = 'dm'; 
+        State.dmTarget = tid; // Ensure target is set
+        
+        // --- BUTTON FOR CALL ---
+        const rightBtn = document.getElementById('chat-top-right'); 
+        if(rightBtn) {
+            rightBtn.innerHTML = `<i class="fas fa-phone-alt" style="cursor:pointer; color:var(--primary); font-size:1.1rem; padding:10px;" onclick="Voice.callUser('${tid}')"></i>`;
+        }
+        // -----------------------
+
+        const ids = [State.user.uid, tid].sort(); 
+        document.getElementById('modal-user').classList.remove('open'); 
+        if(!targetName) { const nameEl = document.getElementById('u-name'); targetName = nameEl ? nameEl.innerText : 'Chat'; } 
+        const titleEl = document.getElementById('chat-title'); 
+        if(titleEl) { titleEl.innerHTML = `${targetName} <i class="fas fa-user-circle" style="font-size:0.7em; opacity:0.5; margin-left:8px;"></i>`; titleEl.classList.add('clickable-header'); titleEl.onclick = () => window.Profile.view(tid); } 
+        Route('chat'); Chat.listen(db.ref('dms/'+ids.join('_')), 'chat-feed'); 
+    },
+    
+    decryptEffect: (element) => { const originalText = element.innerText; if(!originalText || originalText.length === 0) return; const chars = "01"; let iterations = 0; const speed = 30; element.style.fontFamily = "'JetBrains Mono', monospace"; element.style.color = "var(--secondary)"; const interval = setInterval(() => { element.innerText = originalText.split("").map((letter, index) => { if (index < iterations) return originalText[index]; return chars[Math.floor(Math.random() * 2)]; }).join(""); if (iterations >= originalText.length) { clearInterval(interval); element.style.color = ""; element.style.fontFamily = ""; } iterations += 1 / 2; }, speed); },
+    
+    // --- CUSTOM AUDIO RENDERER ---
+    renderAudio: (url, key) => {
+        return `<div class="custom-audio-player" id="cap-${key}">
+            <button class="cap-play" id="cap-btn-${key}" onclick="Chat.playAudio('${key}', '${url}')"><i class="fas fa-play"></i></button>
+            <div class="cap-track-bg"><div class="cap-progress" id="cap-prog-${key}"></div></div>
+            <span class="cap-time" id="cap-time-${key}">0:00</span>
+        </div>`;
+    },
+
+    playAudio: (key, url) => {
+        const btn = document.getElementById(`cap-btn-${key}`);
+        const icon = btn.querySelector('i');
+        const prog = document.getElementById(`cap-prog-${key}`);
+        const timeEl = document.getElementById(`cap-time-${key}`);
+
+        // Если это же аудио играет, ставим на паузу
+        if (Chat.activeAudio && Chat.activeBtnId === key) {
+            if (Chat.activeAudio.paused) {
+                Chat.activeAudio.play();
+                icon.className = 'fas fa-pause';
+            } else {
+                Chat.activeAudio.pause();
+                icon.className = 'fas fa-play';
+                icon.style.paddingLeft = '3px'; // Fix визуального центра
+            }
+            return;
+        }
+
+        // Если играет другое аудио, останавливаем его
+        if (Chat.activeAudio) {
+            Chat.activeAudio.pause();
+            const prevBtn = document.getElementById(`cap-btn-${Chat.activeBtnId}`);
+            if(prevBtn) {
+                prevBtn.querySelector('i').className = 'fas fa-play';
+                prevBtn.querySelector('i').style.paddingLeft = '3px';
+            }
+        }
+
+        // Создаем новый объект аудио
+        const audio = new Audio(url);
+        Chat.activeAudio = audio;
+        Chat.activeBtnId = key;
+
+        audio.play().then(() => {
+            icon.className = 'fas fa-pause';
+            icon.style.paddingLeft = '0';
+        }).catch(e => console.error(e));
+
+        audio.ontimeupdate = () => {
+            if (!audio.duration) return;
+            const p = (audio.currentTime / audio.duration) * 100;
+            if(prog) prog.style.width = p + '%';
+            
+            const cur = Math.floor(audio.currentTime);
+            const min = Math.floor(cur/60);
+            const sec = cur%60;
+            if(timeEl) timeEl.innerText = `${min}:${sec<10?'0'+sec:sec}`;
+        };
+
+        audio.onended = () => {
+            icon.className = 'fas fa-play';
+            icon.style.paddingLeft = '3px';
+            if(prog) prog.style.width = '0%';
+            if(timeEl) timeEl.innerText = '0:00';
+            Chat.activeAudio = null;
+        };
+    },
+
+    listen: (ref, elId) => {
+        const feed = document.getElementById(elId); if(!feed) return; feed.innerHTML = ''; if(State.chatRef) State.chatRef.off(); State.chatRef = ref;
+        let initialLoad = true; setTimeout(() => { initialLoad = false; }, 2000);
+        const markRead = (snap) => { const val = snap.val(); if (val.uid !== State.user.uid && !val.read) snap.ref.update({read: true}); };
+        
+        ref.limitToLast(50).on('child_added', async s => {
+            const d = s.val(), key = s.key; const isMine = d.uid === State.user.uid;
+
+            // --- BLOCK CHECK ---
+            if(!isMine) {
+                const isBlocked = await Block.isBlockedByMe(d.uid);
+                if(isBlocked) return; // Don't render message
+            }
+            // -------------------
+
+            if (!isMine && document.getElementById('tab-chat').classList.contains('active') && !document.hidden) markRead(s);
+            if (!isMine && !initialLoad && (document.hidden || !document.getElementById('tab-chat').classList.contains('active'))) { let notifText = d.text; if(d.audio) notifText = '🎤 Voice Message'; else if(d.image) notifText = '📷 Image'; UI.notify(d.user, notifText, 'msg', d.avatar); }
+            const div = document.createElement('div'); div.className = `msg ${isMine?'mine':''}`; div.id = 'msg-'+key;
+            let del = ''; if(isMine || State.profile.role==='super') del = `<i class="fas fa-trash" style="margin-left:5px; cursor:pointer; color:#666; font-size:0.8rem;" onclick="Chat.del('${key}')"></i>`;
+            const aviId = `avi-${key}`;
+            let prefixHtml = ''; if (d.prefix) { prefixHtml = `<span style="color:${d.prefixColor || '#fff'}; margin-right:5px; font-weight:800; font-family:'Exo 2'; text-shadow:0 0 5px ${d.prefixColor};">[${d.prefix}]</span>`; }
+            const textHtml = d.text ? `<div class="decode-target">${safe(d.text)}</div>` : '';
+            
+            // Используем новую функцию рендера аудио
+            let audioHtml = ''; if (d.audio) audioHtml = Chat.renderAudio(d.audio, key);
+            
+            div.innerHTML = `<img id="${aviId}" src="${d.avatar}" class="avatar" onclick="window.Profile.view('${d.uid}')"><div class="bubble"><div style="font-size:0.75rem; font-weight:700; color:${isMine?'#fff':'#bc13fe'}; margin-bottom:3px;">${prefixHtml}${d.user} ${del}</div>${d.image ? `<img src="${d.image}" class="msg-img" onclick="showImg(this.src)">` : ''}${audioHtml}${textHtml}</div>`;
+            feed.appendChild(div); feed.scrollTop = feed.scrollHeight;
+            if (!initialLoad && d.text) { const textEl = div.querySelector('.decode-target'); if (textEl) Chat.decryptEffect(textEl); }
+            db.ref(`users/${d.uid}/avatar`).once('value', snap => { if(snap.exists()) { const realAvatar = snap.val(); const imgEl = document.getElementById(aviId); if(imgEl && realAvatar !== d.avatar) imgEl.src = realAvatar; } });
+        });
+        ref.on('child_removed', s => { const el=document.getElementById('msg-'+s.key); if(el)el.remove(); });
+    },
+    del: k => UI.confirm("DELETE", "Delete message?", () => State.chatRef.child(k).remove()), confirmEdit: () => {}
 };
-
 document.addEventListener('DOMContentLoaded', () => { Chat.init(); });

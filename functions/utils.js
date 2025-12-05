@@ -9,7 +9,7 @@ function resizeImage(file, callback) {
         img.onload = () => {
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
-            const maxDim = 800;
+            const maxDim = 1024; // Чуть увеличили качество
             let w = img.width; let h = img.height;
             if (w > h) { if (w > maxDim) { h *= maxDim / w; w = maxDim; } } 
             else { if (h > maxDim) { w *= maxDim / h; h = maxDim; } }
@@ -22,7 +22,17 @@ function resizeImage(file, callback) {
     reader.readAsDataURL(file);
 }
 
-// --- СИСТЕМА УВЕДОМЛЕНИЙ ---
+// Конвертация Blob (аудио) в Base64
+function blobToBase64(blob, callback) {
+    const reader = new FileReader();
+    reader.onload = () => {
+        const dataUrl = reader.result;
+        callback(dataUrl);
+    };
+    reader.readAsDataURL(blob);
+}
+
+// --- NOTIFICATIONS SYSTEM ---
 window.Notifications = {
     init: () => {
         if ("Notification" in window && Notification.permission !== "granted") {
@@ -33,51 +43,64 @@ window.Notifications = {
         if (Notification.permission === "granted" && document.hidden) {
             new Notification(title, {
                 body: body,
-                icon: icon || 'icon.png'
+                icon: icon || 'https://cdn-icons-png.flaticon.com/512/733/733585.png'
             });
         }
     }
 };
 
-// --- СИСТЕМА БЛОКИРОВКИ (PocketBase) ---
 window.Block = {
-    toggle: async () => {
+    toggle: () => {
         if(!State.dmTarget) return;
-        const btn = document.getElementById('btn-block');
-        
-        try {
-            // Ищем, есть ли уже запись о блокировке
-            const records = await pb.collection('blocked').getList(1, 1, {
-                filter: `user = "${State.user.uid}" && target = "${State.dmTarget}"`
-            });
-
-            if(records.items.length > 0) {
-                // Если нашли -> разблокируем (удаляем запись)
-                await pb.collection('blocked').delete(records.items[0].id);
-                UI.toast("Unblocked");
-                if(btn) btn.innerText = "BLOCK";
-            } else {
-                // Если не нашли -> блокируем (создаем запись)
-                await pb.collection('blocked').create({
-                    user: State.user.uid,
-                    target: State.dmTarget
-                });
-                UI.toast("Blocked");
-                if(btn) btn.innerText = "UNBLOCK";
-            }
-        } catch(err) {
-            console.error("Block error:", err);
-            // Если ошибка 404, значит коллекции blocked нет или нет прав
-            UI.toast("Error (Check 'blocked' collection)", "error");
-        }
+        const ref = db.ref('users/'+State.user.uid+'/blocked/'+State.dmTarget);
+        ref.once('value', s => {
+            if(s.exists()){ ref.remove(); UI.toast("Unblocked"); document.getElementById('btn-block').innerText="BLOCK"; }
+            else { ref.set(true); UI.toast("Blocked"); document.getElementById('btn-block').innerText="UNBLOCK"; }
+        });
     },
-    
-    check: async (targetUid) => {
+    // Удалить по UID (для списка в настройках)
+    remove: (targetUid) => {
+        db.ref('users/'+State.user.uid+'/blocked/'+targetUid).remove()
+          .then(() => UI.toast("User unblocked"));
+    },
+    check: (targetUid) => {
+        return db.ref('users/'+targetUid+'/blocked/'+State.user.uid).once('value').then(s => s.exists());
+    },
+    // Проверка, заблокировал ли Я этого пользователя (чтобы скрыть его сообщения)
+    isBlockedByMe: (targetUid) => {
+        return db.ref('users/'+State.user.uid+'/blocked/'+targetUid).once('value').then(s => s.exists());
+    }
+};
+
+window.Privacy = {
+    // Проверка прав перед действием (targetUid - кому звоним/пишем)
+    // type: 'dm' или 'call'
+    check: async (targetUid, type) => {
         try {
-            const records = await pb.collection('blocked').getList(1, 1, {
-                filter: `user = "${State.user.uid}" && target = "${targetUid}"`
-            });
-            return records.items.length > 0;
-        } catch(e) { return false; }
+            const snap = await db.ref('users/' + targetUid).once('value');
+            const user = snap.val();
+            if (!user) return { allowed: false, error: "User not found" };
+
+            // 1. Проверка Черного Списка (Blocked)
+            // Если targetUid заблокировал State.user.uid
+            if (user.blocked && user.blocked[State.user.uid]) {
+                return { allowed: false, error: "You are blocked by this user." };
+            }
+
+            // 2. Проверка настроек приватности
+            const privacy = user.privacy || {};
+            
+            // По умолчанию разрешено, если настройки нет
+            const allowDMs = privacy.allowDMs !== false; 
+            const allowCalls = privacy.allowCalls !== false;
+
+            if (type === 'dm' && !allowDMs) return { allowed: false, error: "This user has disabled DMs." };
+            if (type === 'call' && !allowCalls) return { allowed: false, error: "This user is not accepting calls." };
+
+            return { allowed: true };
+        } catch (e) {
+            console.error(e);
+            return { allowed: false, error: "Connection error" };
+        }
     }
 };

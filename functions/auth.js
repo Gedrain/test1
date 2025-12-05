@@ -1,173 +1,102 @@
-window.Auth = {
-    heartbeatInterval: null,
+const Auth = {
+    init: () => {
+        auth.onAuthStateChanged(u => {
+            if(u) {
+                const myStatus = db.ref('users/' + u.uid + '/status'); const myLastSeen = db.ref('users/' + u.uid + '/lastSeen');
+                db.ref('.info/connected').on('value', (snap) => { if (snap.val() === true) { myStatus.onDisconnect().set('offline'); myLastSeen.onDisconnect().set(firebase.database.ServerValue.TIMESTAMP); myStatus.set('online'); } });
+                
+                db.ref('users/'+u.uid).on('value', s => {
+                    if(!s.exists()) return; 
+                    const v = s.val(); 
+                    
+                    // --- BAN LOGIC START ---
+                    if(v.isBanned) { 
+                        // Скрываем основной интерфейс
+                        document.getElementById('view-main').classList.add('hidden');
+                        document.getElementById('view-auth').classList.add('hidden');
+                        // Показываем экран бана с анимацией
+                        Auth.renderBanScreen(v.banReason || "No Reason Specified");
+                        return; 
+                    } else {
+                        // Если разбанили, скрываем терминал
+                        document.getElementById('view-ban').classList.add('hidden');
+                    }
+                    // --- BAN LOGIC END ---
 
-    init: async () => {
-        if (pb.authStore.isValid) {
-            try {
-                const u = await pb.collection('users').getOne(pb.authStore.model.id);
-                Auth.loginSuccess(u);
-            } catch (err) {
-                console.error("Auth invalid:", err);
-                pb.authStore.clear();
-                Auth.showLogin();
-            }
-        } else {
-            Auth.showLogin();
-        }
-
-        pb.authStore.onChange((token, model) => {
-            if (!token) window.location.reload();
-        });
-    },
-
-    loginSuccess: async (userRecord) => {
-        console.log("Logged in as:", userRecord.username);
-        
-        State.user = { uid: userRecord.id, email: userRecord.email };
-        State.profile = userRecord;
-
-        Auth.setStatus('online');
-
-        if (Auth.heartbeatInterval) clearInterval(Auth.heartbeatInterval);
-        Auth.heartbeatInterval = setInterval(() => {
-            pb.collection('users').update(userRecord.id, { lastSeen: new Date() })
-                .catch(e => console.warn("Heartbeat fail", e));
-        }, 60000);
-
-        window.addEventListener('beforeunload', () => {
-            const url = SERVER_URL + '/api/collections/users/records/' + userRecord.id;
-            const data = new FormData();
-            data.append('status', 'offline');
-            navigator.sendBeacon(url, data); 
-        });
-
-        document.getElementById('view-auth').classList.add('hidden');
-        document.getElementById('view-main').classList.remove('hidden');
-        const loader = document.getElementById('loader');
-        if(loader) loader.classList.add('hidden');
-
-        if (userRecord.role === 'admin' || userRecord.role === 'super') {
-            document.getElementById('nav-admin').classList.remove('hidden');
-            if(window.Admin) Admin.load();
-        }
-
-        // === ИСПОЛЬЗУЕМ USERNAME И ID ===
-        // Если имя пустое, берем username
-        const displayName = userRecord.name || userRecord.username || "User";
-        document.getElementById('my-nick').value = displayName;
-        document.getElementById('my-bio').value = userRecord.bio || '';
-        // Используем системный ID
-        document.getElementById('my-id-badge').innerText = "ID: " + userRecord.id.substr(0, 5);
-        
-        const aviEl = document.getElementById('my-avi');
-        if (userRecord.avatar) aviEl.src = pb.files.getUrl(userRecord, userRecord.avatar);
-        else aviEl.src = `https://robohash.org/${userRecord.id}?set=set4`;
-
-        if (userRecord.banner) {
-            const bannerUrl = pb.files.getUrl(userRecord, userRecord.banner);
-            document.getElementById('my-banner-prev').style.backgroundImage = `url(${bannerUrl})`;
-        }
-
-        const savedTheme = localStorage.getItem('neko_theme');
-        if (savedTheme && window.Settings) Settings.applyTheme(JSON.parse(savedTheme));
-
-        if(window.Channels) Channels.load();
-        if(!document.querySelector('.tab-pane.active')) Route('channels');
-    },
-
-    setStatus: async (status) => {
-        if(!State.user) return;
-        try {
-            await pb.collection('users').update(State.user.uid, {
-                status: status,
-                lastSeen: new Date()
-            });
-        } catch(e) { console.log("Set status err", e); }
-    },
-
-    showLogin: () => {
-        document.getElementById('view-auth').classList.remove('hidden');
-        document.getElementById('view-main').classList.add('hidden');
-    },
-
-    toggle: () => {
-        State.isReg = !State.isReg;
-        const nickInput = document.getElementById('auth-nick');
-        const btn = document.querySelector('#view-auth .btn-solid');
-        const toggleLink = document.querySelector('#view-auth span[onclick="Auth.toggle()"]');
-        
-        if (State.isReg) {
-            nickInput.style.display = 'block';
-            nickInput.placeholder = "Username"; // Меняем подсказку
-            btn.innerText = 'REGISTER';
-            toggleLink.innerText = 'Back to Login';
-        } else {
-            nickInput.style.display = 'none';
-            btn.innerText = 'LOGIN';
-            toggleLink.innerText = 'Register';
-        }
-    },
-    
-    submit: async () => {
-        const email = document.getElementById('auth-email').value.trim();
-        const pass = document.getElementById('auth-pass').value.trim();
-        const username = document.getElementById('auth-nick').value.trim(); // Это теперь username
-              
-        if (!email || !pass) return UI.toast("Email & Pass required", "error");
-        
-        if (State.isReg) {
-            if (!username) return UI.toast("Username required", "error");
-            if (pass.length < 8) return UI.toast("Password min 8 chars", "error");
-
-            try {
-                // === РЕГИСТРАЦИЯ БЕЗ shortId ===
-                await pb.collection('users').create({
-                    username: username, // Важно: пишем в username
-                    email: email,
-                    emailVisibility: true,
-                    password: pass,
-                    passwordConfirm: pass,
-                    name: username, // Дублируем в имя
-                    role: 'user',
-                    status: 'online'
+                    State.user = u; State.profile = v;
+                    document.getElementById('view-auth').classList.add('hidden'); document.getElementById('view-main').classList.remove('hidden');
+                    if(v.role==='admin'||v.role==='super') document.getElementById('nav-admin').classList.remove('hidden');
+                    if(!document.querySelector('.tab-pane.active')) Route('channels');
+                    Channels.load(); if(v.role==='admin'||v.role==='super') Admin.load();
+                    if(v.themeConfig) { localStorage.setItem('neko_theme_config', JSON.stringify(v.themeConfig)); Settings.config = v.themeConfig; Settings.applyTheme(v.themeConfig); }
                 });
-
-                await pb.collection('users').authWithPassword(email, pass);
-                Auth.loginSuccess(pb.authStore.model);
-                UI.toast("Welcome!", "success");
-
-            } catch (err) {
-                console.error(err);
-                // Обработка ошибок
-                let msg = "Registration failed";
-                if(err.response?.data?.username) msg = "Username taken or invalid";
-                if(err.response?.data?.email) msg = "Email invalid or taken";
-                UI.toast(msg, "error");
-            }
-
-        } else {
-            try {
-                await pb.collection('users').authWithPassword(email, pass);
-                Auth.loginSuccess(pb.authStore.model);
-            } catch (err) {
-                console.error(err);
-                UI.toast("Invalid Credentials", "error");
-            }
-        }
+            } else { document.getElementById('view-auth').classList.remove('hidden'); }
+        });
     },
     
-    reset: async () => {
-        const email = document.getElementById('auth-email').value;
-        if (!email) return UI.toast("Enter Email first", "msg");
-        try {
-            await pb.collection('users').requestPasswordReset(email);
-            UI.toast("Check your email", "success");
-        } catch (err) { UI.toast("Error sending reset", "error"); }
+    // Анимация терминала при бане
+    renderBanScreen: (reason) => {
+        const screen = document.getElementById('view-ban');
+        const console = document.getElementById('ban-console');
+        const msg = document.getElementById('ban-message');
+        const reasonText = document.getElementById('ban-reason-text');
+        
+        screen.classList.remove('hidden');
+        console.innerHTML = '';
+        msg.classList.add('hidden');
+        reasonText.innerText = reason.toUpperCase();
+
+        const logs = [
+            "Initiating session...",
+            "Verifying identity signature...",
+            "Decrypting user profile...",
+            "Accessing NekoNet database...",
+            "Checking blacklist status...",
+            "<span style='color:#ff0055'>[ALERT]</span> SECURITY FLAG DETECTED",
+            "<span style='color:#ff0055'>[CRITICAL]</span> ACCOUNT SUSPENDED"
+        ];
+
+        let i = 0;
+        const printLog = () => {
+            if(i < logs.length) {
+                const div = document.createElement('div');
+                div.className = 'log-entry';
+                div.innerHTML = `> ${logs[i]}`;
+                console.appendChild(div);
+                i++;
+                setTimeout(printLog, 300);
+            } else {
+                setTimeout(() => {
+                    msg.classList.remove('hidden');
+                }, 500);
+            }
+        };
+        printLog();
     },
-    
-    logout: async () => {
-        await Auth.setStatus('offline');
-        pb.authStore.clear();
-        location.reload();
-    }
+
+    setMode: (isReg) => {
+        State.isReg = isReg; const container = document.querySelector('.auth-switch-container'); const nickGroup = document.getElementById('group-nick'); const btnText = document.querySelector('.btn-cyber .btn-content'); const tabLogin = document.getElementById('tab-login'); const tabReg = document.getElementById('tab-reg');
+        if (isReg) { container.classList.add('reg-mode'); nickGroup.classList.remove('collapsed'); btnText.innerText = "REGISTER_NEKO_ID"; tabLogin.classList.remove('active'); tabReg.classList.add('active'); } 
+        else { container.classList.remove('reg-mode'); nickGroup.classList.add('collapsed'); btnText.innerText = "INITIALIZE_SESSION"; tabLogin.classList.add('active'); tabReg.classList.remove('active'); }
+    },
+    togglePassVisibility: (el) => {
+        const input = document.getElementById('auth-pass');
+        if (input.type === 'password') { input.type = 'text'; el.classList.replace('fa-eye', 'fa-eye-slash'); el.style.color = 'var(--secondary)'; } 
+        else { input.type = 'password'; el.classList.replace('fa-eye-slash', 'fa-eye'); el.style.color = ''; }
+    },
+    submit: () => {
+        const e = document.getElementById('auth-email').value; const p = document.getElementById('auth-pass').value; const n = document.getElementById('auth-nick').value;
+        if (!e || !p) return UI.toast("CREDENTIALS MISSING", "error");
+        const btn = document.querySelector('.btn-cyber'); const originalText = btn.querySelector('.btn-content').innerText; btn.querySelector('.btn-content').innerText = "PROCESSING...";
+        if (State.isReg) {
+            if (!n) { btn.querySelector('.btn-content').innerText = originalText; return UI.toast("CODENAME REQUIRED", "error"); }
+            auth.createUserWithEmailAndPassword(e, p).then(c => {
+                c.user.sendEmailVerification(); const sid = '#' + c.user.uid.substr(0, 5).toUpperCase();
+                const defaultTheme = { accent: '#d600ff', bg: '#05000a', panel: '#0e0e12', text: '#ffffff', msgText: '#ffffff', msgSize: '1', radius: '0' };
+                db.ref('users/' + c.user.uid).set({ displayName: n, email: e, avatar: `https://robohash.org/${c.user.uid}`, shortId: sid, role: 'user', themeConfig: defaultTheme, createdAt: firebase.database.ServerValue.TIMESTAMP });
+            }).catch(err => { UI.alert("ACCESS DENIED", err.message); btn.querySelector('.btn-content').innerText = originalText; });
+        } else { auth.signInWithEmailAndPassword(e, p).catch(err => { UI.alert("AUTH FAILED", err.message); btn.querySelector('.btn-content').innerText = originalText; }); }
+    },
+    reset: () => { const e = document.getElementById('auth-email').value; if (e) auth.sendPasswordResetEmail(e).then(() => UI.toast("RECOVERY LINK SENT", "success")); else UI.toast("ENTER EMAIL FIRST", "info"); },
+    logout: () => auth.signOut().then(() => location.reload())
 };
